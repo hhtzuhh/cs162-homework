@@ -41,19 +41,32 @@ int init_words(WordCount **wclist) {
   return 0;
 }
 
+// Count how many nodes are in the linked list.
 ssize_t len_words(WordCount *wchead) {
   /* Return -1 if any errors are
      encountered in the body of
      this function.
   */
+    if (wchead == NULL) return 0;
     size_t len = 0;
+    WordCount *curr = wchead;
+    while (curr != NULL) {
+      len++;
+      curr = curr->next;
+    }
     return len;
 }
-
+//Search the list for the word. Return the node if found, NULL otherwise.
 WordCount *find_word(WordCount *wchead, char *word) {
   /* Return count for word, if it exists */
-  WordCount *wc = NULL;
-  return wc;
+  WordCount *curr = wchead;
+  while (curr != NULL) {
+    if (strcmp(curr->word, word) == 0) {
+      return curr;
+    }
+    curr = curr->next;
+  }
+  return NULL;
 }
 
 int add_word(WordCount **wclist, char *word) {
@@ -61,6 +74,28 @@ int add_word(WordCount **wclist, char *word) {
      Otherwise insert with count 1.
      Returns 0 if no errors are encountered in the body of this function; 1 otherwise.
   */
+  if (wclist == NULL || word == NULL) return 1;
+  WordCount *existing = find_word(*wclist, word);
+  if (existing != NULL) {
+    existing->count++;
+    return 0;
+  }
+
+  WordCount *new_node = malloc(sizeof(WordCount));
+  if (new_node == NULL) return 1;
+
+  new_node->word = new_string(word);
+  if (new_node->word == NULL) {
+    free(new_node);
+    return 1;
+  }
+
+  new_node->count = 1;
+  new_node->next = *wclist;
+  *wclist = new_node;
+
+
+
  return 0;
 }
 

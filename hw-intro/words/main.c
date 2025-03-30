@@ -46,7 +46,22 @@ WordCount *word_counts = NULL;
  */
 int num_words(FILE* infile) {
   int num_words = 0;
-
+  int c;
+  int word_len = 0;
+  while ((c = fgetc(infile)) != EOF) {
+    if (isalpha(c)) {
+      word_len++;
+    } else {
+      if (word_len >= 2) {
+        num_words++;
+      }
+      word_len = 0;
+    }
+  }
+  // handle the last word
+  if (word_len >= 2) {
+    num_words++;
+  }
   return num_words;
 }
 
@@ -62,6 +77,36 @@ int num_words(FILE* infile) {
  * and 0 otherwise.
  */
 int count_words(WordCount **wclist, FILE *infile) {
+  if (wclist == NULL || infile == NULL) {
+    return 1;
+  }
+  char word[MAX_WORD_LEN + 1];
+  int word_len = 0;
+  int c;
+
+  while ((c = fgetc(infile)) != EOF) {
+    if (isalpha(c)) {
+      if (word_len < MAX_WORD_LEN) {
+        word[word_len++] = tolower(c);
+      }
+    } else {
+      if (word_len >= 2) {
+        word[word_len] = '\0';
+        if (add_word(wclist, word) != 0) {
+          return 1;
+        }
+      }
+
+      word_len = 0;
+    }
+  }
+  // Handle the last word if file doesn't end with delimiter
+  if (word_len >= 2) {
+    word[word_len] = '\0';
+    if (add_word(wclist, word) != 0) {
+      return 1;
+    }
+  }
   return 0;
 }
 
@@ -70,7 +115,11 @@ int count_words(WordCount **wclist, FILE *infile) {
  * Useful function: strcmp().
  */
 static bool wordcount_less(const WordCount *wc1, const WordCount *wc2) {
-  return 0;
+  
+  if (wc1->count != wc2->count) {
+    return wc1->count < wc2->count;
+  }
+  return strcmp(wc1->word, wc2->word) < 0;
 }
 
 // In trying times, displays a helpful message.
@@ -94,7 +143,7 @@ int main (int argc, char *argv[]) {
   // Freq Mode: outputs the frequency of each word
   bool freq_mode = false;
 
-  FILE *infile = NULL;
+  // FILE *infile = NULL;
 
   // Variables for command line argument parsing
   int i;
@@ -132,11 +181,37 @@ int main (int argc, char *argv[]) {
 
   if ((argc - optind) < 1) {
     // No input file specified, instead, read from STDIN instead.
-    infile = stdin;
+    if (count_mode) {
+      total_words += num_words(stdin);
+    } else {
+      if (count_words(&word_counts, stdin) == 1) {
+        fprintf(stderr, "Error reading from stdin\n");
+        return 1;
+      }
+    }
   } else {
     // At least one file specified. Useful functions: fopen(), fclose().
     // The first file can be found at argv[optind]. The last file can be
     // found at argv[argc-1].
+    for (int j = optind; j < argc; j++) {
+      FILE *file = fopen(argv[j], "r");
+      if (!file) {
+        fprintf(stderr, "Failed to open file: %s\n", argv[j]);
+        continue; 
+      }
+
+      if (count_mode) {
+        total_words += num_words(file);
+      } else {
+        if (count_words(&word_counts, file) == 1) {
+          fprintf(stderr, "Error reading file: %s\n", argv[j]);
+          fclose(file);
+          continue;
+        }
+      }
+      fclose(file);
+
+    }
   }
 
   if (count_mode) {
