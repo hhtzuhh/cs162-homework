@@ -30,6 +30,8 @@ pid_t shell_pgid;
 
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
+int cmd_pwd(struct tokens* tokens);
+int cmd_cd(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -44,6 +46,8 @@ typedef struct fun_desc {
 fun_desc_t cmd_table[] = {
     {cmd_help, "?", "show this help menu"},
     {cmd_exit, "exit", "exit the command shell"},
+    {cmd_pwd, "pwd", "print current working directory"},
+    {cmd_cd, "cd", "change current working directory"},
 };
 
 /* Prints a helpful description for the given command */
@@ -90,6 +94,35 @@ void init_shell() {
   }
 }
 
+/* Prints current working directory */
+int cmd_pwd(unused struct tokens* tokens) {
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        printf("%s\n", cwd);
+        return 0;  // Success
+    } else {
+        perror("pwd");
+        return 1;  // Failure
+    }
+}
+
+/* Changes current working directory */
+int cmd_cd(struct tokens* tokens) {
+  // length can only be 2? what if it's more than 2?
+  // and other cd functions
+    if (tokens_get_length(tokens) != 2) {
+        fprintf(stderr, "cd: missing directory argument\n");
+        return 1;  
+    }
+    // TODO:handle ~,and check some other cases, check online
+    const char* dir = tokens_get_token(tokens, 1);
+    if (chdir(dir) != 0) {
+        perror("cd");
+        return 1;  
+    }
+    return 0;
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -97,12 +130,16 @@ int main(unused int argc, unused char* argv[]) {
   int line_num = 0;
 
   /* Please only print shell prompts when standard input is not a tty */
-  if (shell_is_interactive)
+  if (!shell_is_interactive)
     fprintf(stdout, "%d: ", line_num);
 
   while (fgets(line, 4096, stdin)) {
     /* Split our line into words. */
     struct tokens* tokens = tokenize(line);
+    // I want to print all the tokens
+    for (int i = 0; i < tokens_get_length(tokens); i++) {
+      printf("token %d: %s\n", i, tokens_get_token(tokens, i));
+    }
 
     /* Find which built-in function to run. */
     int fundex = lookup(tokens_get_token(tokens, 0));
@@ -110,11 +147,43 @@ int main(unused int argc, unused char* argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      /* Execute program */
+      pid_t pid = fork();
+      if (pid == 0) {
+        // Child process
+        // Convert tokens to argv array
+        int argc = tokens_get_length(tokens);
+        char* argv[argc + 1];  // +1 for NULL terminator
+        
+        for (int i = 0; i < argc; i++) {
+          argv[i] = tokens_get_token(tokens, i);
+        }
+        argv[argc] = NULL;  // NULL terminate the array
+        
+        // Execute the program
+        execv(argv[0], argv);
+        
+        // If we get here, execv failed
+        perror("execv");
+        exit(1);
+      } else if (pid > 0) {
+        // Parent process
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+          int exit_status = WEXITSTATUS(status);
+          if (exit_status != 0) {
+            fprintf(stderr, "Program exited with status %d\n", exit_status);
+          }
+        }
+      } else {
+        // Fork failed
+        perror("fork");
+      }
     }
 
-    if (shell_is_interactive)
+    if (!shell_is_interactive)
       /* Please only print shell prompts when standard input is not a tty */
       fprintf(stdout, "%d: ", ++line_num);
 
