@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "tokenizer.h"
 
@@ -123,6 +124,69 @@ int cmd_cd(struct tokens* tokens) {
     return 0;
 }
 
+/* Helper function to check if a file exists and is executable */
+static bool is_executable(const char* path) {
+    struct stat st;
+    return access(path, X_OK) == 0 &&
+           stat(path, &st) == 0 &&
+           S_ISREG(st.st_mode);  // Ensures it's a regular file
+}
+
+/* Helper function to resolve program path using PATH environment variable */
+static char* resolve_program_path(const char* program) {
+    // what is this?
+    if (strchr(program, '/')) {
+        if (is_executable(program)) {
+            return strdup(program);
+        }
+        return NULL;
+    }
+
+    // Get PATH environment variable
+    const char* path_env = getenv("PATH");
+    if (!path_env) {
+        return NULL;
+    }
+    printf("path string: %s\n", path_env);
+
+    // Make a copy of PATH for strtok_r
+    char* path_copy = strdup(path_env);
+    if (!path_copy) {
+        return NULL;
+    }
+    // sequential search the path var, and try to put the program into path
+    // and test if is_executable
+    char* saveptr;
+    char* dir = strtok_r(path_copy, ":", &saveptr);
+    char* full_path = NULL;
+
+    while (dir) {
+        // Allocate space for dir + / + program + null terminator
+        size_t full_path_len = strlen(dir) + 1 + strlen(program) + 1;
+        full_path = malloc(full_path_len);
+        if (!full_path) {
+            free(path_copy);
+            return NULL;
+        }
+
+        // Construct full path
+        snprintf(full_path, full_path_len, "%s/%s", dir, program);
+
+        // Check if file exists and is executable
+        if (is_executable(full_path)) {
+            free(path_copy);
+            return full_path;
+        }
+
+        free(full_path);
+        full_path = NULL;
+        dir = strtok_r(NULL, ":", &saveptr);
+    }
+
+    free(path_copy);
+    return NULL;
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -136,6 +200,13 @@ int main(unused int argc, unused char* argv[]) {
   while (fgets(line, 4096, stdin)) {
     /* Split our line into words. */
     struct tokens* tokens = tokenize(line);
+    
+    // Skip empty input
+    if (tokens_get_length(tokens) == 0) {
+      tokens_destroy(tokens);
+      continue;
+    }
+
     // I want to print all the tokens
     for (int i = 0; i < tokens_get_length(tokens); i++) {
       printf("token %d: %s\n", i, tokens_get_token(tokens, i));
@@ -148,23 +219,82 @@ int main(unused int argc, unused char* argv[]) {
       cmd_table[fundex].fun(tokens);
     } else {
       /* Execute program */
+      const char* program = tokens_get_token(tokens, 0);
+      char* full_path = resolve_program_path(program);
+      
+      if (!full_path) {
+        fprintf(stderr, "%s: command not found\n", program);
+        tokens_destroy(tokens);
+        continue;
+      }
+      //for loop the tokens_get_token from index 1
+      // and check if contain <, and >. and chec
       pid_t pid = fork();
       if (pid == 0) {
         // Child process
+        char *token_per;
+        int count = 0;
+        int in = -1, out = -1;
+        // define in and out
+        for (int i = 0; i < tokens_get_length(tokens); i++) {
+          token_per = tokens_get_token(tokens, i);
+          if (strcmp(token_per, "<") == 0) {
+            ++i;
+            if ((in = open(tokens_get_token(tokens, i), O_RDONLY)) < 0) {
+              perror("open input file");
+              free(full_path);
+              exit(1);
+            }
+            dup2(in, STDIN_FILENO);         // duplicate stdin to input file
+            close(in);                      // close after use
+            count++;
+            continue;
+          }
+
+          if (strcmp(token_per, ">") == 0) {
+            ++i;
+            out = open(tokens_get_token(tokens, i), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out < 0) {
+              perror("open output file");
+              free(full_path);
+              exit(1);
+            }
+            dup2(out, STDOUT_FILENO);       // redirect stdout to file
+            close(out);                     // close after use
+            count++;
+            continue;
+          }
+        }
+
+        count = count*2; // operator , ">", and the file should not in args
         // Convert tokens to argv array
         int argc = tokens_get_length(tokens);
+        argc = argc - count;
         char* argv[argc + 1];  // +1 for NULL terminator
         
-        for (int i = 0; i < argc; i++) {
-          argv[i] = tokens_get_token(tokens, i);
+        // First argument is the full path
+        argv[0] = full_path;
+
+
+
+        // Copy remaining arguments, and skip
+        int arg_index = 1;
+        for (int i = 1; i < argc; i++) {
+          char *tok = tokens_get_token(tokens, i);
+          if (!strcmp(tok, "<") || !strcmp(tok, ">")) {
+            i++;
+            continue;
+          }
+          argv[arg_index++] = tok;
         }
-        argv[argc] = NULL;  // NULL terminate the array
+        argv[arg_index] = NULL;  // NULL terminate the array
         
         // Execute the program
-        execv(argv[0], argv);
+        execv(full_path, argv);
         
         // If we get here, execv failed
         perror("execv");
+        free(full_path);
         exit(1);
       } else if (pid > 0) {
         // Parent process
@@ -177,9 +307,11 @@ int main(unused int argc, unused char* argv[]) {
             fprintf(stderr, "Program exited with status %d\n", exit_status);
           }
         }
+        free(full_path);
       } else {
         // Fork failed
         perror("fork");
+        free(full_path);
       }
     }
 
