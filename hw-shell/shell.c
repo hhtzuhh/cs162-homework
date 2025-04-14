@@ -50,6 +50,14 @@ fun_desc_t cmd_table[] = {
     {cmd_pwd, "pwd", "print current working directory"},
     {cmd_cd, "cd", "change current working directory"},
 };
+static void ignore_signal(int signum) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;      // ignore the signal
+    sa.sa_flags   = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(signum, &sa, NULL);
+}
 
 /* Prints a helpful description for the given command */
 int cmd_help(unused struct tokens* tokens) {
@@ -76,6 +84,12 @@ void init_shell() {
 
   /* Check if we are running interactively */
   shell_is_interactive = isatty(shell_terminal);
+
+  ignore_signal(SIGINT);   // Shell won't die if user hits Ctrl+C while shell is foreground
+  ignore_signal(SIGTSTP);  // Shell won't be stopped if user hits Ctrl+Z while shell is foreground
+  ignore_signal(SIGTTIN);  // Shell won't be stopped if it accidentally reads in background
+  ignore_signal(SIGTTOU);  // Shell won't be stopped if it accidentally writes in background
+  ignore_signal(SIGQUIT);  // Shell won't die from Ctrl+`\`
 
   if (shell_is_interactive) {
     /* If the shell is not currently in the foreground, we must pause the shell until it becomes a
@@ -337,6 +351,8 @@ static int execute_pipeline(struct tokens* tokens) {
     // Fork and execute commands
     int start = 0;
     int segment = 0;
+    pid_t pipeline_pgid = 0;
+    
     pid_t* pids = malloc(num_commands * sizeof(pid_t));
     if (!pids) {
         perror("malloc");
@@ -349,6 +365,13 @@ static int execute_pipeline(struct tokens* tokens) {
             strcmp(tokens_get_token(tokens, i), "|") == 0) {
             pids[segment] = fork();
             if (pids[segment] == 0) {
+                // -- child --
+                if (segment == 0) {
+                    setpgid(0, 0);
+                } else {
+                    setpgid(0, pipeline_pgid);
+                }
+
                 // Child process
                 int pipe_in = (segment > 0) ? pipes[segment-1][0] : -1;
                 int pipe_out = (segment < num_commands-1) ? pipes[segment][1] : -1;
@@ -359,12 +382,37 @@ static int execute_pipeline(struct tokens* tokens) {
                     if (j != segment) close(pipes[j][1]); // close write end
                 }
 
+                // Restore default handling for signals in the child
+                struct sigaction sa;
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = SIG_DFL;
+                sa.sa_flags   = 0;
+                sigemptyset(&sa.sa_mask);
+
+                // Restore for signals you want the child to handle normally
+                sigaction(SIGINT,  &sa, NULL);
+                sigaction(SIGTSTP, &sa, NULL);
+                sigaction(SIGTTIN, &sa, NULL);
+                sigaction(SIGTTOU, &sa, NULL);
+                sigaction(SIGQUIT, &sa, NULL);
+
+
                 execute_command_segment(tokens, start, i, pipe_in, pipe_out);
             } else if (pids[segment] < 0) {
                 perror("fork");
                 free(pipes);
                 free(pids);
                 return -1;
+            } else {
+                // -- parent --
+                if (segment == 0) {
+                    pipeline_pgid = pids[0];
+                    setpgid(pids[0], pids[0]);
+
+                } else {
+                    setpgid(pids[segment], pipeline_pgid);
+                }
+
             }
             start = i + 1;
             segment++;
@@ -377,6 +425,11 @@ static int execute_pipeline(struct tokens* tokens) {
         close(pipes[i][1]);
     }
 
+    //you’re making the pipeline’s process group the foreground process group for the terminal. That ensures:
+    // Signals from the terminal (e.g., Ctrl+C → SIGINT, Ctrl+Z → SIGTSTP) go to the child processes instead of the shell.
+    tcsetpgrp(STDIN_FILENO, pipeline_pgid);
+
+
     // Wait for all children
     for (int i = 0; i < num_commands; i++) {
         int status;
@@ -388,6 +441,10 @@ static int execute_pipeline(struct tokens* tokens) {
             }
         }
     }
+    
+    // let parent gain back the control
+    tcsetpgrp(STDIN_FILENO, getpgrp());
+
 
     free(pipes);
     free(pids);
